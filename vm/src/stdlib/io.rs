@@ -3,9 +3,9 @@
  */
 
 
-// use std::fs::File;
-// use std::io::prelude::*;
-// use std::io::{BufReader,BufWriter};
+use std::fs::File;
+use std::io::prelude::*;
+use std::io::{BufReader,BufWriter};
 
 use super::super::obj::objstr::get_value;
 
@@ -65,13 +65,21 @@ fn file_io_read(vm: &mut VirtualMachine, args: PyFuncArgs) -> PyResult {
         args,
         required = [(file_io, None)]
     );
+    let py_name = file_io.get_attr("name").unwrap();
+    let f = match File::open(get_value(& py_name)) {
+        Ok(v) => Ok(v),
+        Err(v) => Err(vm.new_type_error("Error opening file".to_string())),
+    }; 
 
-    match file_io.get_attr("name") {
-        Some(v) => {
-            println!("{}", get_value(&v));
-        }
-        None => {}
-    }   
+    let buffer = match f {
+        Ok(v) =>  Ok(BufReader::new(v)),
+        Err(v) => Err(vm.new_type_error("Error reading from file".to_string()))
+    };
+
+    let mut bytes = vec![];
+    if let Ok(mut buff) = buffer {
+        buff.read_to_end(&mut bytes);
+    }
     Ok(vm.get_none())
 }
 
@@ -102,27 +110,6 @@ fn io_open(vm: &mut VirtualMachine, args: PyFuncArgs) -> PyResult {
 
     //If the mode is text this buffer type is consumed on construction of 
     //a TextIOWrapper which is subsequently returned.
-
-
-    // match File::open(filename) {
-    //     Ok(f) => {
-    //         let mut reader = BufReader::new(f);
-    //     }
-    // }
-
-//             reader.read_line(&mut buffer);
-//             println!("{}", buffer);
-//         },
-//         Err(..) => {
-//             println!("Err");
-//         }
-//     }
-//     Ok(vm.new_bool(false))
-
-//     // let mut buf_reader = BufReader::new(file);
-//     // let mut contents = String::new();
-//     // buf_reader.read_to_string(&mut contents)?;
-
 }
 
 
