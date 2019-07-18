@@ -15,6 +15,7 @@ with FileIO('README.md') as fio:
 	assert len(result) <= 8*1024
 	assert len(result) >= 0
 	assert isinstance(result, bytes)
+	assert isintance(fio.fileno(), int)
 
 fd = os.open('README.md', os.O_RDONLY)
 

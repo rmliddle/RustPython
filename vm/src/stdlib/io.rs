@@ -308,26 +308,36 @@ fn file_io_init(vm: &VirtualMachine, args: PyFuncArgs) -> PyResult {
         optional = [(mode, Some(vm.ctx.str_type()))]
     );
 
-    let file_no = if objtype::isinstance(&name, &vm.ctx.str_type()) {
-        let rust_mode = mode.map_or("r".to_string(), objstr::get_value);
-        let args = vec![
-            name.clone(),
-            vm.ctx
-                .new_int(compute_c_flag(&rust_mode).to_bigint().unwrap()),
-        ];
-        os::os_open(vm, PyFuncArgs::new(args, vec![]))?
-    } else if objtype::isinstance(&name, &vm.ctx.int_type()) {
-        name.clone()
-    } else {
-        return Err(vm.new_type_error("name parameter must be string or int".to_string()));
+    let rust_mode = objstr::get_value(mode.unwrap());
+    let concat_mode = match rust_mode.chars().next().unwrap() {
+        'x' | 'w' | 'a' | '+' => format!("{}b", rust_mode),
+        _ => return Err(vm.new_value_error("".to_string()))
     };
 
     vm.set_attr(file_io, "name", name.clone())?;
-    vm.set_attr(file_io, "fileno", file_no)?;
+    vm.set_attr(file_io, "mode", vm.new_str(concat_mode))?;
     vm.set_attr(file_io, "closefd", vm.new_bool(false))?;
     vm.set_attr(file_io, "closed", vm.new_bool(false))?;
     Ok(vm.get_none())
 }
+
+fn file_io_fileno(vm: &VirtualMachine, args: PyFuncArgs) -> PyResult {
+    arg_check!(vm, args, required = [(file_io, None)]);
+    let name = vm.get_attribute(file_io.clone(), "name")?;
+    let mode = vm.get_attribute(file_io.clone(), "mode")?;
+    let rust_mode = objstr::get_value(&mode);
+
+    if objtype::isinstance(&name, &vm.ctx.str_type()) {
+        let c_flag = compute_c_flag(&rust_mode).to_bigint().unwrap();
+        let args = vec![name.clone(), vm.ctx.new_int(c_flag.clone())];
+        os::os_open(vm, PyFuncArgs::new(args, vec![]))
+    } else if objtype::isinstance(&name, &vm.ctx.int_type()) {
+        Ok(name.clone())
+    } else {
+        Err(vm.new_type_error("name parameter must be string or int".to_string()))
+    }
+}
+
 
 fn file_io_read(vm: &VirtualMachine, args: PyFuncArgs) -> PyResult {
     arg_check!(vm, args, required = [(file_io, None)]);
@@ -367,8 +377,6 @@ fn file_io_readinto(vm: &VirtualMachine, args: PyFuncArgs) -> PyResult {
 
     let mut f = handle.take(length);
     if let Some(bytes) = obj.payload::<PyByteArray>() {
-        //TODO: Implement for MemoryView
-
         let value_mut = &mut bytes.inner.borrow_mut().elements;
         value_mut.clear();
         match f.read_to_end(value_mut) {
@@ -648,7 +656,8 @@ pub fn make_module(vm: &VirtualMachine) -> PyObjectRef {
         "name" => ctx.str_type(),
         "read" => ctx.new_rustfunc(file_io_read),
         "readinto" => ctx.new_rustfunc(file_io_readinto),
-        "write" => ctx.new_rustfunc(file_io_write)
+        "write" => ctx.new_rustfunc(file_io_write),
+        "fileno" => ctx.new_rustfunc(file_io_fileno),
     });
 
     // BufferedIOBase Subclasses
