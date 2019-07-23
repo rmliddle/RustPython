@@ -101,7 +101,6 @@ impl PyValue for PyStringIO {
 }
 
 impl PyStringIORef {
-    //write string to underlying vector
     fn write(self, data: objstr::PyStringRef, vm: &VirtualMachine) -> PyResult {
         let bytes = &data.value.clone().into_bytes();
 
@@ -111,7 +110,6 @@ impl PyStringIORef {
         }
     }
 
-    //return the entire contents of the underlying
     fn getvalue(self, vm: &VirtualMachine) -> PyResult {
         match String::from_utf8(self.buffer.borrow().getvalue()) {
             Ok(result) => Ok(vm.ctx.new_str(result)),
@@ -119,7 +117,6 @@ impl PyStringIORef {
         }
     }
 
-    //skip to the jth position
     fn seek(self, offset: PyObjectRef, vm: &VirtualMachine) -> PyResult {
         let position = objint::get_value(&offset).to_u64().unwrap();
         match self.buffer.borrow_mut().seek(position) {
@@ -128,9 +125,6 @@ impl PyStringIORef {
         }
     }
 
-    //Read k bytes from the object and return.
-    //If k is undefined || k == -1, then we read all bytes until the end of the file.
-    //This also increments the stream position by the value of k
     fn read(self, bytes: OptionalArg<Option<PyObjectRef>>, vm: &VirtualMachine) -> PyResult {
         let data = match self.buffer.borrow_mut().read(byte_count(bytes)) {
             Some(value) => value,
@@ -182,14 +176,11 @@ impl PyBytesIORef {
             None => Err(vm.new_type_error("Error Writing Bytes".to_string())),
         }
     }
-    //Retrieves the entire bytes object value from the underlying buffer
+
     fn getvalue(self, vm: &VirtualMachine) -> PyResult {
         Ok(vm.ctx.new_bytes(self.buffer.borrow().getvalue()))
     }
 
-    //Takes an integer k (bytes) and returns them from the underlying buffer
-    //If k is undefined || k == -1, then we read all bytes until the end of the file.
-    //This also increments the stream position by the value of k
     fn read(self, bytes: OptionalArg<Option<PyObjectRef>>, vm: &VirtualMachine) -> PyResult {
         match self.buffer.borrow_mut().read(byte_count(bytes)) {
             Some(value) => Ok(vm.ctx.new_bytes(value)),
@@ -197,7 +188,6 @@ impl PyBytesIORef {
         }
     }
 
-    //skip to the jth position
     fn seek(self, offset: PyObjectRef, vm: &VirtualMachine) -> PyResult {
         let position = objint::get_value(&offset).to_u64().unwrap();
         match self.buffer.borrow_mut().seek(position) {
@@ -300,120 +290,181 @@ fn compute_c_flag(mode: &str) -> u32 {
     flags.bits()
 }
 
-fn file_io_init(vm: &VirtualMachine, args: PyFuncArgs) -> PyResult {
-    arg_check!(
-        vm,
-        args,
-        required = [(file_io, None), (name, None)],
-        optional = [(mode, Some(vm.ctx.str_type()))]
-    );
+#[derive(Debug)]
+struct FileIO {
+    fileno : u32,
+}
+
+
+type FileIORef = PyRef<FileIO>;
+
+impl PyValue for FileIO {
+    fn class(vm: &VirtualMachine) -> PyClassRef {
+        vm.class("io", "FileIO")
+    }
+}
+
+
+fn file_io_new(
+    cls: PyClassRef,
+    name: PyObjectRef,
+    mode: OptionalArg<Option<PyObjectRef>>,
+    vm: &VirtualMachine,
+) -> PyResult<FileIORef> {
+    let rust_mode = match mode {
+        OptionalArg::Present(Some(ref input)) => objstr::get_value(input),
+        _ => "r".to_string(),
+    };
+
 
     let file_no = if objtype::isinstance(&name, &vm.ctx.str_type()) {
-        let rust_mode = mode.map_or("r".to_string(), objstr::get_value);
-        let args = vec![
-            name.clone(),
-            vm.ctx
-                .new_int(compute_c_flag(&rust_mode).to_bigint().unwrap()),
-        ];
+        let c_flag = compute_c_flag(&rust_mode).to_bigint().unwrap();
+        let args = vec![name.clone(), vm.ctx.new_int(c_flag)];
+
         os::os_open(vm, PyFuncArgs::new(args, vec![]))?
     } else if objtype::isinstance(&name, &vm.ctx.int_type()) {
+
         name.clone()
     } else {
-        return Err(vm.new_type_error("name parameter must be string or int".to_string()));
+        return Err(vm.new_type_error("expected str, bytes or os.PathLike object".to_string()));
     };
 
-    vm.set_attr(file_io, "name", name.clone())?;
-    vm.set_attr(file_io, "fileno", file_no)?;
-    vm.set_attr(file_io, "closefd", vm.new_bool(false))?;
-    vm.set_attr(file_io, "closed", vm.new_bool(false))?;
-    Ok(vm.get_none())
-}
-
-fn file_io_read(vm: &VirtualMachine, args: PyFuncArgs) -> PyResult {
-    arg_check!(vm, args, required = [(file_io, None)]);
-
-    let file_no = vm.get_attribute(file_io.clone(), "fileno")?;
-    let raw_fd = objint::get_value(&file_no).to_i64().unwrap();
-
-    let mut handle = os::rust_file(raw_fd);
-
-    let mut bytes = vec![];
-    match handle.read_to_end(&mut bytes) {
-        Ok(_) => {}
-        Err(_) => return Err(vm.new_value_error("Error reading from Buffer".to_string())),
+    FileIO {
+        fileno: objint::get_value(&file_no).to_u32().unwrap(),
     }
-
-    Ok(vm.ctx.new_bytes(bytes))
+    .into_ref_with_type(vm, cls)
 }
 
-fn file_io_readinto(vm: &VirtualMachine, args: PyFuncArgs) -> PyResult {
-    arg_check!(vm, args, required = [(file_io, None), (obj, None)]);
+// fn file_io_init(vm: &VirtualMachine, args: PyFuncArgs) -> PyResult {
+//     arg_check!(
+//         vm,
+//         args,
+//         required = [(file_io, None), (name, None)],
+//         optional = [(mode, Some(vm.ctx.str_type()))]
+//     );
 
-    if !obj.readonly() {
-        return Ok(vm.new_type_error(
-            "readinto() argument must be read-write bytes-like object".to_string(),
-        ));
-    }
+//     let file_no = if objtype::isinstance(&name, &vm.ctx.str_type()) {
+//         let rust_mode = mode.map_or("r".to_string(), objstr::get_value);
+//         let args = vec![
+//             name.clone(),
+//             vm.ctx
+//                 .new_int(compute_c_flag(&rust_mode).to_bigint().unwrap()),
+//         ];
+//         os::os_open(vm, PyFuncArgs::new(args, vec![]))?
+//     } else if objtype::isinstance(&name, &vm.ctx.int_type()) {
+//         name.clone()
+//     } else {
+//         return Err(vm.new_type_error("name parameter must be string or int".to_string()));
+//     };
 
-    //extract length of buffer
-    let py_length = vm.call_method(obj, "__len__", PyFuncArgs::default())?;
-    let length = objint::get_value(&py_length).to_u64().unwrap();
+//     vm.set_attr(file_io, "name", name.clone())?;
+//     vm.set_attr(file_io, "closefd", vm.new_bool(false))?;
+//     vm.set_attr(file_io, "closed", vm.new_bool(false))?;
+//     Ok(vm.get_none())
+// }
 
-    let file_no = vm.get_attribute(file_io.clone(), "fileno")?;
-    let raw_fd = objint::get_value(&file_no).to_i64().unwrap();
+// fn file_io_fileno(vm: &VirtualMachine, args: PyFuncArgs) -> PyResult {
+//     arg_check!(vm, args, required = [(file_io, None)]);
+//     let name = vm.get_attribute(file_io.clone(), "name")?;
+//     let mode = vm.get_attribute(file_io.clone(), "mode")?;
+//     let rust_mode = objstr::get_value(&mode);
 
-    //extract unix file descriptor.
-    let handle = os::rust_file(raw_fd);
+//     if objtype::isinstance(&name, &vm.ctx.str_type()) {
+//         let c_flag = compute_c_flag(&rust_mode).to_bigint().unwrap();
+//         let args = vec![name.clone(), vm.ctx.new_int(c_flag.clone())];
+//         os::os_open(vm, PyFuncArgs::new(args, vec![]))
+//     } else if objtype::isinstance(&name, &vm.ctx.int_type()) {
+//         Ok(name.clone())
+//     } else {
+//         Err(vm.new_type_error("name parameter must be string or int".to_string()))
+//     }
+// }
 
-    let mut f = handle.take(length);
-    if let Some(bytes) = obj.payload::<PyByteArray>() {
-        //TODO: Implement for MemoryView
+// fn file_io_read(vm: &VirtualMachine, args: PyFuncArgs) -> PyResult {
+//     arg_check!(vm, args, required = [(file_io, None)]);
 
-        let value_mut = &mut bytes.inner.borrow_mut().elements;
-        value_mut.clear();
-        match f.read_to_end(value_mut) {
-            Ok(_) => {}
-            Err(_) => return Err(vm.new_value_error("Error reading from Take".to_string())),
-        }
-    };
+//     let file_no = vm.get_attribute(file_io.clone(), "fileno")?;
+//     let raw_fd = objint::get_value(&file_no).to_i64().unwrap();
 
-    let updated = os::raw_file_number(f.into_inner());
-    vm.set_attr(file_io, "fileno", vm.ctx.new_int(updated))?;
-    Ok(vm.get_none())
-}
+//     let mut handle = os::rust_file(raw_fd);
 
-fn file_io_write(vm: &VirtualMachine, args: PyFuncArgs) -> PyResult {
-    arg_check!(vm, args, required = [(file_io, None), (obj, None)]);
+//     let mut bytes = vec![];
+//     match handle.read_to_end(&mut bytes) {
+//         Ok(_) => {}
+//         Err(_) => return Err(vm.new_value_error("Error reading from Buffer".to_string())),
+//     }
 
-    let file_no = vm.get_attribute(file_io.clone(), "fileno")?;
-    let raw_fd = objint::get_value(&file_no).to_i64().unwrap();
+//     Ok(vm.ctx.new_bytes(bytes))
+// }
 
-    //unsafe block - creates file handle from the UNIX file descriptor
-    //raw_fd is supported on UNIX only. This will need to be extended
-    //to support windows - i.e. raw file_handles
-    let mut handle = os::rust_file(raw_fd);
+// fn file_io_readinto(vm: &VirtualMachine, args: PyFuncArgs) -> PyResult {
+//     arg_check!(vm, args, required = [(file_io, None), (obj, None)]);
 
-    let bytes = match_class!(obj.clone(),
-        i @ PyBytes => Ok(i.get_value().to_vec()),
-        j @ PyByteArray => Ok(j.inner.borrow().elements.to_vec()),
-        obj => Err(vm.new_type_error(format!(
-                    "a bytes-like object is required, not {}",
-                    obj.class()
-                )))
-    );
+//     if !obj.readonly() {
+//         return Ok(vm.new_type_error(
+//             "readinto() argument must be read-write bytes-like object".to_string(),
+//         ));
+//     }
 
-    match handle.write(&bytes?) {
-        Ok(len) => {
-            //reset raw fd on the FileIO object
-            let updated = os::raw_file_number(handle);
-            vm.set_attr(file_io, "fileno", vm.ctx.new_int(updated))?;
+//     //extract length of buffer
+//     let py_length = vm.call_method(obj, "__len__", PyFuncArgs::default())?;
+//     let length = objint::get_value(&py_length).to_u64().unwrap();
 
-            //return number of bytes written
-            Ok(vm.ctx.new_int(len))
-        }
-        Err(_) => Err(vm.new_value_error("Error Writing Bytes to Handle".to_string())),
-    }
-}
+//     let file_no = vm.get_attribute(file_io.clone(), "fileno")?;
+//     let raw_fd = objint::get_value(&file_no).to_i64().unwrap();
+
+//     //extract unix file descriptor.
+//     let handle = os::rust_file(raw_fd);
+
+//     let mut f = handle.take(length);
+//     if let Some(bytes) = obj.payload::<PyByteArray>() {
+//         //TODO: Implement for MemoryView
+
+//         let value_mut = &mut bytes.inner.borrow_mut().elements;
+//         value_mut.clear();
+//         match f.read_to_end(value_mut) {
+//             Ok(_) => {}
+//             Err(_) => return Err(vm.new_value_error("Error reading from Take".to_string())),
+//         }
+//     };
+
+//     let updated = os::raw_file_number(f.into_inner());
+//     vm.set_attr(file_io, "fileno", vm.ctx.new_int(updated))?;
+//     Ok(vm.get_none())
+// }
+
+// fn file_io_write(vm: &VirtualMachine, args: PyFuncArgs) -> PyResult {
+//     arg_check!(vm, args, required = [(file_io, None), (obj, None)]);
+
+//     let file_no = vm.get_attribute(file_io.clone(), "fileno")?;
+//     let raw_fd = objint::get_value(&file_no).to_i64().unwrap();
+
+//     //unsafe block - creates file handle from the UNIX file descriptor
+//     //raw_fd is supported on UNIX only. This will need to be extended
+//     //to support windows - i.e. raw file_handles
+//     let mut handle = os::rust_file(raw_fd);
+
+//     let bytes = match_class!(obj.clone(),
+//         i @ PyBytes => Ok(i.get_value().to_vec()),
+//         j @ PyByteArray => Ok(j.inner.borrow().elements.to_vec()),
+//         obj => Err(vm.new_type_error(format!(
+//                     "a bytes-like object is required, not {}",
+//                     obj.class()
+//                 )))
+//     );
+
+//     match handle.write(&bytes?) {
+//         Ok(len) => {
+//             //reset raw fd on the FileIO object
+//             let updated = os::raw_file_number(handle);
+//             vm.set_attr(file_io, "fileno", vm.ctx.new_int(updated))?;
+
+//             //return number of bytes written
+//             Ok(vm.ctx.new_int(len))
+//         }
+//         Err(_) => Err(vm.new_value_error("Error Writing Bytes to Handle".to_string())),
+//     }
+// }
 
 fn buffered_writer_write(vm: &VirtualMachine, args: PyFuncArgs) -> PyResult {
     arg_check!(
@@ -642,13 +693,13 @@ pub fn make_module(vm: &VirtualMachine) -> PyObjectRef {
     });
 
     // RawBaseIO Subclasses
-    // TODO Fix name?
     let file_io = py_class!(ctx, "FileIO", raw_io_base.clone(), {
-        "__init__" => ctx.new_rustfunc(file_io_init),
-        "name" => ctx.str_type(),
-        "read" => ctx.new_rustfunc(file_io_read),
-        "readinto" => ctx.new_rustfunc(file_io_readinto),
-        "write" => ctx.new_rustfunc(file_io_write)
+        "__new__" => ctx.new_rustfunc(file_io_new),
+        // "name" => ctx.str_type(),
+        // "read" => ctx.new_rustfunc(file_io_read),
+        // "readinto" => ctx.new_rustfunc(file_io_readinto),
+        // "write" => ctx.new_rustfunc(file_io_write),
+        // "fileno" => ctx.new_rustfunc(file_io_fileno)
     });
 
     // BufferedIOBase Subclasses
